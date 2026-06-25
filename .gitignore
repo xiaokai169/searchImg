@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+
+# 数据文件（本地生成，不上传）
+data/
+uploads/
+*.db
+*.bin
+*.npy
+
+# 模型文件（体积大）
+models/
+
+# 临时文件
+*.log
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.bmp
+
+# IDE
+.vscode/
+.idea/
+.claude/
+.playwright-mcp/
+.spec-workflow/
+
+# 系统文件
+.DS_Store
+Thumbs.db
