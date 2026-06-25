@@ -23,8 +23,9 @@ MAX_PAGES = SYNC_MAX_PAGES
 
 def fetch_products(page: int) -> dict:
     params = {"page": page, "size": PAGE_SIZE, "state": "approved"}
+    auth = TOKEN if TOKEN.lower().startswith('bearer ') else f"Bearer {TOKEN}"
     resp = requests.get(API_URL, params=params,
-                        headers={"Authorization": f"Bearer {TOKEN}"}, timeout=30)
+                        headers={"Authorization": auth}, timeout=30)
     resp.raise_for_status()
     return resp.json()
 
