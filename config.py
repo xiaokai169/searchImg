@@ -101,7 +101,7 @@ SYNC_MAX_PAGES = 4
 
 # ========== 华为云 OBS 图片处理 ==========
 # 拼接在图片 URL 后面，用于缩略图展示（不影响原图特征提取）
-OBS_IMAGE_PROCESS = '?x-image-process=image/resize,m_lfit,w_800;quality,q_85;auto-orient,1'
+OBS_IMAGE_PROCESS = '?x-image-process=image/resize,m_lfit,w_800/quality,q_85/auto-orient,1'
 
 # ========== Flask ==========
 FLASK_HOST = '0.0.0.0'
