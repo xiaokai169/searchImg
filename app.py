@@ -633,7 +633,11 @@ async function s(){
         h+='<div class="score">'+pct+'%</div>';
       }
       h+='<div class="cat">'+catName+'</div>';
-      if(pname)h+='<div class="cat" style="font-size:10px;color:#666;line-height:1.3;max-height:2.6em;overflow:hidden">'+pname+'</div>';
+      var pnameCn=r.product_name_cn||'';
+      if(pnameCn)h+='<div class="cat" style="font-size:12px;color:#333;font-weight:500">'+pnameCn+'</div>';
+      if(pname)h+='<div class="cat" style="font-size:10px;color:#999">'+pname+'</div>';
+      var pid=r.product_id||'';
+      if(pid)h+='<div class="cat" style="font-size:10px;color:#bbb">ID: '+pid+'</div>';
       h+='<div class="bar"><div style="width:'+pct+'%;background:'+barColor+'"></div></div>';
       h+='</div></div>';
     });
