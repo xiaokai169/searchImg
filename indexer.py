@@ -55,9 +55,8 @@ def add_single_image(image_bytes: bytes, image_url: str,
         width=info.get('width', 0), height=info.get('height', 0),
     )
 
-    # 每入库一张就保存索引（防止进程被 kill 丢失）
-    engine.save()
-
+    # 不在这里保存 —— 避免 5700 张图写 5700 次磁盘
+    # 索引统一在 sync_products.py 结束后由 shutdown 钩子或手动保存
     return {
         "db_id": db_id, "faiss_id": faiss_id,
         "image_url": image_url, "category": category,

@@ -432,6 +432,20 @@ def api_rebuild_index():
         return jsonify({"code": -1, "msg": str(e)}), 409
 
 
+@app.route('/api/save_index', methods=['POST'])
+def api_save_index():
+    """手动保存索引到磁盘"""
+    _ensure_init()
+    try:
+        e = get_engine()
+        if e.total > 0:
+            e.save()
+            return jsonify({"code": 0, "msg": f"索引已保存, {e.total} 个向量"})
+        return jsonify({"code": 0, "msg": "索引为空，跳过保存"})
+    except Exception as ex:
+        return jsonify({"code": -1, "msg": str(ex)}), 500
+
+
 # ==================== Web 搜索界面 ====================
 
 _HTML = """<!DOCTYPE html>

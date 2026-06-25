@@ -121,6 +121,12 @@ def main():
     print(f"  完成: {total_ok} OK, {total_fail} FAIL, {time.time()-t0:.0f}秒")
     r = requests.get(f"{LOCAL_API}/api/stats").json()['data']
     print(f"  索引: {r['db_records']}张, 品类{len(r['by_category'])}个")
+
+    # 保存 FAISS 索引到磁盘
+    print(f"\n  正在保存索引...")
+    save_resp = requests.post(f"{LOCAL_API}/api/save_index")
+    if save_resp.json().get('code') == 0:
+        print(f"  {save_resp.json()['msg']}")
     print(f"{'='*50}")
 
 
