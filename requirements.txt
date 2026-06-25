@@ -5,6 +5,7 @@
 
 # Web 框架
 flask>=3.0
+requests>=2.28
 
 # 向量检索引擎
 faiss-cpu>=1.7.4
