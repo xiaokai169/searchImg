@@ -10,7 +10,7 @@ import requests
 
 from config import (
     ARAB_BEE_API_URL, ARAB_BEE_TOKEN, SYNC_PAGE_SIZE, SYNC_MAX_PAGES,
-    FLASK_HOST, FLASK_PORT, OBS_IMAGE_PROCESS,
+    FLASK_HOST, FLASK_PORT,
 )
 from text_utils import build_keywords
 
@@ -61,12 +61,9 @@ def sync_page(page: int):
             fail += 1
             continue
 
-        # 华为云 OBS: 下载时拼接图片处理参数（加速+省流量），数据库存原始 URL
-        img_url_download = img_url_raw + OBS_IMAGE_PROCESS
-
         try:
-            # 1. 下载图片（拼接处理参数，800px + 85%质量，加速下载）
-            img_resp = requests.get(img_url_download, timeout=30)
+            # 1. 下载图片用于特征提取
+            img_resp = requests.get(img_url_raw, timeout=30)
             img_resp.raise_for_status()
             image_bytes = img_resp.content
 
