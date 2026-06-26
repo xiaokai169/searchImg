@@ -38,12 +38,12 @@ def _ensure_init():
         engine = get_engine()
         if not engine.load():
             print("[Init] 创建新索引")
-        # 后台预热 OCR（不阻塞启动）
-        try:
-            from ocr_extract import warmup_ocr
-            warmup_ocr()
-        except Exception:
-            pass
+        # 后台预热 OCR（已禁用，内存不足）
+        # try:
+        #     from ocr_extract import warmup_ocr
+        #     warmup_ocr()
+        # except Exception:
+        #     pass
         _init_done = True
 
 
@@ -267,36 +267,34 @@ def api_search():
         resnet_vec = extractor.extract_resnet(image_bytes)
         feat_ms = round((time.time() - t_feat) * 1000, 1)
 
-        # ====== OCR 文字提取 + 验证 ======
+        # ====== OCR 文字提取（已禁用） ======
         ocr_keywords = []
         ocr_raw_texts = []
-        try:
-            from ocr_extract import extract_text
-            ocr_raw = extract_text(image_bytes)
-            if ocr_raw:
-                ocr_raw_texts = [t for t, _ in ocr_raw]
-                # 分词 + 去噪
-                import re
-                raw_keywords = set()
-                for t, conf in ocr_raw:
-                    for tok in re.split(r'[\s\-/,.;:()\[\]{}]+', t.lower()):
-                        tok = tok.strip()
-                        if len(tok) > 2 and not tok.isdigit():
-                            raw_keywords.add(tok)
-                # 验证：只保留在库里产品名中真实出现过的词
-                if raw_keywords:
-                    from database import get_all_images
-                    all_imgs = get_all_images()
-                    all_names = ' '.join(
-                        (img.get('product_name') or '').lower() for img in all_imgs
-                    )
-                    ocr_keywords = [kw for kw in raw_keywords if kw in all_names]
-                    if ocr_keywords:
-                        print(f"[Search] OCR 有效关键词: {ocr_keywords}")
-                    elif raw_keywords:
-                        print(f"[Search] OCR 全部被过滤: {list(raw_keywords)[:10]}")
-        except Exception as ex:
-            print(f"[Search] OCR 未就绪: {ex}")
+        # try:
+        #     from ocr_extract import extract_text
+        #     ocr_raw = extract_text(image_bytes)
+        #     if ocr_raw:
+        #         ocr_raw_texts = [t for t, _ in ocr_raw]
+        #         import re
+        #         raw_keywords = set()
+        #         for t, conf in ocr_raw:
+        #             for tok in re.split(r'[\s\-/,.;:()\[\]{}]+', t.lower()):
+        #                 tok = tok.strip()
+        #                 if len(tok) > 2 and not tok.isdigit():
+        #                     raw_keywords.add(tok)
+        #         if raw_keywords:
+        #             from database import get_all_images
+        #             all_imgs = get_all_images()
+        #             all_names = ' '.join(
+        #                 (img.get('product_name') or '').lower() for img in all_imgs
+        #             )
+        #             ocr_keywords = [kw for kw in raw_keywords if kw in all_names]
+        #             if ocr_keywords:
+        #                 print(f"[Search] OCR 有效关键词: {ocr_keywords}")
+        #             elif raw_keywords:
+        #                 print(f"[Search] OCR 全部被过滤: {list(raw_keywords)[:10]}")
+        # except Exception as ex:
+        #     print(f"[Search] OCR 未就绪: {ex}")
 
         # ====== 品类自动识别 ======
         predicted_cat = None
