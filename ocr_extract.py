@@ -9,45 +9,55 @@ from PIL import Image
 import io
 
 
-_reader = None
+# ch_sim 只能和 en 搭配，ar 需要单独的 Reader（gen1）
+_reader_cn = None    # en + ch_sim
+_reader_ar = None    # ar
 _reader_lock = threading.Lock()
-
-
 _easyocr_available = None
 
 
+def _get_easyocr():
+    """验证 easyocr 是否可用（不加载模型）"""
+    global _easyocr_available
+    if _easyocr_available is not None:
+        return _easyocr_available
+    try:
+        import easyocr  # noqa: F401
+        _easyocr_available = True
+    except ImportError:
+        _easyocr_available = False
+    return _easyocr_available
+
+
 def _get_reader():
-    """懒加载 easyocr Reader（单例，线程安全）"""
-    global _reader, _easyocr_available
-    if _easyocr_available is False:
-        return None
-    if _reader is not None:
-        return _reader
+    """懒加载 easyocr Readers（单例，线程安全）"""
+    global _reader_cn, _reader_ar, _easyocr_available
+    if not _get_easyocr():
+        return None, None
+    if _reader_cn is not None and _reader_ar is not None:
+        return _reader_cn, _reader_ar
     with _reader_lock:
-        if _reader is not None:
-            return _reader
-        if _easyocr_available is False:
-            return None
+        if _reader_cn is not None and _reader_ar is not None:
+            return _reader_cn, _reader_ar
         try:
             import easyocr
-            print("[OCR] 加载 easyocr 模型（首次约30秒）...")
-            _reader = easyocr.Reader(['en', 'ar', 'ch_sim'], gpu=False)
-            _easyocr_available = True
-            print("[OCR] 模型就绪")
-            return _reader
-        except ImportError:
-            print("[OCR] easyocr 未安装，OCR 功能不可用")
-            _easyocr_available = False
-            return None
+            if _reader_cn is None:
+                print("[OCR] 加载中英文模型 (en+ch_sim) ...")
+                _reader_cn = easyocr.Reader(['en', 'ch_sim'], gpu=False)
+                print("[OCR] 中英文模型就绪")
+            if _reader_ar is None:
+                print("[OCR] 加载阿拉伯语模型 (ar) ...")
+                _reader_ar = easyocr.Reader(['ar'], gpu=False)
+                print("[OCR] 阿拉伯语模型就绪")
+            return _reader_cn, _reader_ar
         except SystemExit:
-            # gunicorn worker 超时信号 → 模型下载太慢
             print("[OCR] 模型下载超时（gunicorn timeout），OCR 已禁用")
             _easyocr_available = False
-            return None
+            return None, None
         except Exception as e:
             print(f"[OCR] 加载失败: {e}")
             _easyocr_available = False
-            return None
+            return None, None
 
 
 def warmup_ocr():
@@ -66,15 +76,24 @@ def extract_text(image_bytes: bytes) -> list[tuple[str, float]]:
     按置信度降序排列
     """
     try:
-        reader = _get_reader()
-        if reader is None:
+        reader_cn, reader_ar = _get_reader()
+        if reader_cn is None and reader_ar is None:
             return []  # OCR 未就绪，静默降级
         img = Image.open(io.BytesIO(image_bytes)).convert('RGB')
         arr = np.array(img)
-        results = reader.readtext(arr, detail=1)  # detail=1 返回 (bbox, text, confidence)
-        # 只保留置信度 ≥ 0.5 的结果
-        return [(t.strip(), float(c)) for _, t, c in results
-                if t.strip() and float(c) >= 0.5]
+        results = []
+        if reader_cn is not None:
+            results.extend(reader_cn.readtext(arr, detail=1))
+        if reader_ar is not None:
+            results.extend(reader_ar.readtext(arr, detail=1))
+        # 按文本去重，保留置信度更高的
+        seen = {}
+        for _, t, c in results:
+            t_stripped = t.strip()
+            if t_stripped and float(c) >= 0.5:
+                if t_stripped not in seen or float(c) > seen[t_stripped]:
+                    seen[t_stripped] = float(c)
+        return sorted(seen.items(), key=lambda x: x[1], reverse=True)
     except Exception as e:
         print(f"[OCR] 提取失败: {e}")
         return []
