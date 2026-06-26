@@ -1,56 +1,61 @@
 """
-预下载 easyocr 模型，两种方式任选：
-
-方式1（Python）:  python download_ocr_models.py
-方式2（Shell）:   bash download_ocr_models.sh
-
-模型存放路径: ~/.EasyOCR/model/
+预下载 easyocr 模型（优先 HF 镜像，国内更快）
+用法: python download_ocr_models.py
 """
 import os
 import zipfile
-import sys
 
 MODEL_DIR = os.path.expanduser('~/.EasyOCR/model')
 
-# easyocr 需要的模型（名称, 下载URL, 解压后的文件名）
+# (文件名前缀, 解压后.pth名)
 MODELS = [
-    ('craft_mlt_25k',
-     'https://github.com/JaidedAI/EasyOCR/releases/download/v1.3/craft_mlt_25k.zip',
-     'craft_mlt_25k.pth'),
-    ('english_g2',
-     'https://github.com/JaidedAI/EasyOCR/releases/download/pre-v1.1.6/english_g2.zip',
-     'english_g2.pth'),
-    ('arabic',
-     'https://github.com/JaidedAI/EasyOCR/releases/download/pre-v1.1.6/arabic.zip',
-     'arabic.pth'),
-    ('zh_sim_g2',
-     'https://github.com/JaidedAI/EasyOCR/releases/download/pre-v1.1.6/zh_sim_g2.zip',
-     'zh_sim_g2.pth'),
+    ('craft_mlt_25k', 'craft_mlt_25k.pth'),
+    ('english_g2',    'english_g2.pth'),
+    ('arabic',        'arabic.pth'),
+    ('zh_sim_g2',     'zh_sim_g2.pth'),
+]
+
+# 两个源：HF 镜像优先（国内可访问），GitHub 兜底
+URL_TEMPLATES = [
+    'https://huggingface.co/itextresearch/itext-EasyOCR/resolve/main/{name}.zip',
+    'https://github.com/JaidedAI/EasyOCR/releases/download/pre-v1.1.6/{name}.zip',
 ]
 
 
-def download():
+def download_one(name: str, target_file: str):
     from urllib.request import urlretrieve
 
-    os.makedirs(MODEL_DIR, exist_ok=True)
+    target = os.path.join(MODEL_DIR, target_file)
+    if os.path.exists(target):
+        size = os.path.getsize(target) / 1024 / 1024
+        print(f"  ✅ {name} 已存在 ({size:.1f} MB)")
+        return
 
-    for name, url, target_file in MODELS:
-        target = os.path.join(MODEL_DIR, target_file)
-        if os.path.exists(target):
-            size_mb = os.path.getsize(target) / 1024 / 1024
-            print(f"  ✅ {name} 已存在 ({size_mb:.1f} MB)")
-            continue
-
+    for tmpl in URL_TEMPLATES:
+        url = tmpl.format(name=name)
         zip_path = os.path.join(MODEL_DIR, f'{name}.zip')
-        print(f"  ⬇ {name} 下载中...")
-        urlretrieve(url, zip_path)
-        with zipfile.ZipFile(zip_path, 'r') as zf:
-            zf.extractall(MODEL_DIR)
-        os.remove(zip_path)
-        print(f"  ✅ {name} 完成")
+        try:
+            print(f"  ⬇ {name} 下载中: {url[:60]}...")
+            urlretrieve(url, zip_path)
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                zf.extractall(MODEL_DIR)
+            os.remove(zip_path)
+            print(f"  ✅ {name} 完成")
+            return
+        except Exception as e:
+            print(f"    失败: {e}，换下一个源...")
+            if os.path.exists(zip_path):
+                os.remove(zip_path)
 
+    raise RuntimeError(f"❌ {name} 所有源均下载失败")
+
+
+def main():
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    for name, file in MODELS:
+        download_one(name, file)
     print(f"\n  全部就绪 → {MODEL_DIR}")
 
 
 if __name__ == '__main__':
-    download()
+    main()
