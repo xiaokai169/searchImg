@@ -95,7 +95,7 @@ ALLOWED_CATEGORIES = ['包包', '鞋子', '衣服', '裤子', '裙子', '配饰'
 # JWT Token 从环境变量读取，不硬编码在代码中
 # 设置方式: export ARAB_BEE_TOKEN="your_jwt_token"
 ARAB_BEE_API_URL = "https://biz.arab-bee.com/admin/product/list"
-ARAB_BEE_TOKEN = os.environ.get("ARAB_BEE_TOKEN", "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJpYXQiOjE3ODIzNTM3ODYsImV4cCI6MTc4MjUyNjU4Niwicm9sZXMiOlsiUk9MRV9BRE1JTiJdLCJ1c2VybmFtZSI6ImFyYWIifQ.FKSFd-r6gPS6St6hpvJ1ONEuJ-DBltg65_uHQARQTH0vE2y0LhqUHjBN81KiDGsYfjtdWqQj5hlng8LqwpqxARZuKBF-1x9QSO05CHFzvPgCQWDvcXV1-KZ4rT6MNc79kUZ1kJ9k4Lm2sGhhIrIUQrrOpLRg1xThSLF1EBaBMst5RIWhMmIClwSO9OngAqmUiJCkyJktonsvJq-jVrdphQwpk5I5_NX7mGD12UIrT1-vIDNeDyTi7GlgXx__5XoCVn_K2zyC75_h_IOXZ8eKn0WLnG_uj26NtzoCPLXd9VGZv5QR51E7euQcTtcJDi_7X2Qq7DKL_zW9DYJyGlieWw")
+ARAB_BEE_TOKEN = os.environ.get("ARAB_BEE_TOKEN", "")
 SYNC_PAGE_SIZE = 30
 SYNC_MAX_PAGES = 4
 
