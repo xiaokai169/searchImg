@@ -279,11 +279,19 @@ class TwoStageEngine:
             if not name:
                 return set()
             tokens = re.split(r'[\s\-/,.;:()\[\]{}|]+', name.lower())
-            return {
-                t for t in tokens
-                if len(t) > 3 and t not in STOPS and t not in BRANDS
-                and not t.isdigit() and not t.replace('.', '').isdigit()
-            }
+            result = set()
+            for t in tokens:
+                if not t or t in STOPS or t in BRANDS:
+                    continue
+                if t.isdigit() or t.replace('.', '').isdigit():
+                    continue
+                # 英文词 ≥2 字符即保留（如 CT, USB），中文按单字拆分
+                if len(t) >= 2:
+                    result.add(t)
+                    for ch in t:
+                        if '一' <= ch <= '鿿':  # 中文字符
+                            result.add(ch)
+            return result
 
         # 以第一名产品名为锚
         anchor_words = extract_keywords(results[0].get('product_name', ''))
