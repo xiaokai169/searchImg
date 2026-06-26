@@ -6,11 +6,11 @@ set -e
 MODEL_DIR="$HOME/.EasyOCR/model"
 mkdir -p "$MODEL_DIR"
 
-# 三个源，按优先级排列
+# 三个源，按优先级排列（国内→国外）
 MIRRORS=(
-  "gitee|https://gitee.com/mirrors/easyocr-models/raw/main"
-  "hf|https://huggingface.co/itextresearch/itext-EasyOCR/resolve/main"
-  "gh|https://github.com/JaidedAI/EasyOCR/releases/download/pre-v1.1.6"
+  "hf-mirror|https://hf-mirror.com/itextresearch/itext-EasyOCR/resolve/main"
+  "huggingface|https://huggingface.co/itextresearch/itext-EasyOCR/resolve/main"
+  "github|https://github.com/JaidedAI/EasyOCR/releases/download/pre-v1.1.6"
 )
 
 MODELS=(
@@ -52,7 +52,7 @@ download_one() {
     exit 1
 }
 
-echo "[OCR] 预下载模型 → $MODEL_DIR (Gitee → HF → GitHub)"
+echo "[OCR] 预下载模型 → $MODEL_DIR (hf-mirror → HF → GitHub)"
 echo ""
 
 for m in "${MODELS[@]}"; do

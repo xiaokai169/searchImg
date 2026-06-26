@@ -15,9 +15,9 @@ MODELS = [
     ('zh_sim_g2',     'zh_sim_g2.pth'),
 ]
 
-# 三个源：Gitee 优先 → HF → GitHub
+# 三个源：hf-mirror(国内) → HF → GitHub
 URL_TEMPLATES = [
-    'https://gitee.com/mirrors/easyocr-models/raw/main/{name}.zip',
+    'https://hf-mirror.com/itextresearch/itext-EasyOCR/resolve/main/{name}.zip',
     'https://huggingface.co/itextresearch/itext-EasyOCR/resolve/main/{name}.zip',
     'https://github.com/JaidedAI/EasyOCR/releases/download/pre-v1.1.6/{name}.zip',
 ]
