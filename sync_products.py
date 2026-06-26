@@ -10,7 +10,7 @@ import threading
 import requests
 
 from config import (
-    ARAB_BEE_API_URL, ARAB_BEE_TOKEN, SYNC_PAGE_SIZE, SYNC_MAX_PAGES,
+    ARAB_BEE_API_URL, ARAB_BEE_TOKEN, SYNC_PAGE_SIZE,
     OBS_IMAGE_PROCESS, BATCH_SIZE,
 )
 from database import insert_image, image_url_exists, init_database
@@ -22,7 +22,6 @@ from text_utils import build_keywords
 API_URL = ARAB_BEE_API_URL
 TOKEN = ARAB_BEE_TOKEN
 PAGE_SIZE = SYNC_PAGE_SIZE
-MAX_PAGES = SYNC_MAX_PAGES
 
 # 下载队列（生产者→消费者），放 200 个保证下载跑在转换前面
 DOWNLOAD_QUEUE_SIZE = 200
@@ -126,7 +125,7 @@ def main():
     try:
         first_page = fetch_products(1)
         total_products = first_page.get('totalItems', 0)
-        total_pages = min(MAX_PAGES, -(-total_products // PAGE_SIZE))  # 向上取整
+        total_pages = -(-total_products // PAGE_SIZE)  # 向上取整
     except Exception as e:
         print(f"[ERROR] 无法连接 API: {e}")
         sys.exit(1)
@@ -138,7 +137,7 @@ def main():
     stats = {
         'downloaded': 0, 'download_fail': 0,
         'success': 0, 'fail': 0,
-        'total_products': min(total_products, MAX_PAGES * PAGE_SIZE),
+        'total_products': total_products,
         'queue_size': 0,
         'total_bytes': 0,
         'download_done': False,
@@ -150,7 +149,7 @@ def main():
     def download_worker_with_first_page(dl_queue, st, st_lock, stop_evt, first_items):
         """从第一页数据开始下载（避免重复请求）"""
         all_pages = [(1, first_items)]  # (page_num, items)
-        for page in range(2, MAX_PAGES + 1):
+        for page in range(2, total_pages + 1):
             if stop_evt.is_set():
                 break
             try:
