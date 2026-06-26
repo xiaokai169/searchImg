@@ -3,9 +3,13 @@
 标准化 → 尺寸缩放 → 中心裁切 → 归一化 → 转为模型输入
 """
 import io
+import warnings
 import numpy as np
 from PIL import Image, ImageOps
 from config import MAX_IMAGE_SIZE
+
+# 忽略调色板透明通道警告（不影响推理结果）
+warnings.filterwarnings('ignore', message='Palette images with Transparency')
 
 
 # ImageNet 标准化参数（与训练时一致）
