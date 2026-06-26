@@ -1,16 +1,26 @@
 #!/bin/bash
-# 下载 easyocr 模型（国内优先走 HF 镜像）
+# 下载 easyocr 模型（Gitee 优先 → HF → GitHub）
 # 用法: bash download_ocr_models.sh
 set -e
 
 MODEL_DIR="$HOME/.EasyOCR/model"
 mkdir -p "$MODEL_DIR"
 
-# GitHub（原始）和 HF 镜像（国内更快）
-gh="https://github.com/JaidedAI/EasyOCR/releases/download/pre-v1.1.6"
-hf="https://huggingface.co/itextresearch/itext-EasyOCR/resolve/main"
+# 三个源，按优先级排列
+MIRRORS=(
+  "gitee|https://gitee.com/mirrors/easyocr-models/raw/main"
+  "hf|https://huggingface.co/itextresearch/itext-EasyOCR/resolve/main"
+  "gh|https://github.com/JaidedAI/EasyOCR/releases/download/pre-v1.1.6"
+)
 
-download_and_unzip() {
+MODELS=(
+  "craft_mlt_25k:craft_mlt_25k.pth"
+  "english_g2:english_g2.pth"
+  "arabic:arabic.pth"
+  "zh_sim_g2:zh_sim_g2.pth"
+)
+
+download_one() {
     local name="$1"
     local file="$2"
     local target="$MODEL_DIR/$file"
@@ -20,28 +30,37 @@ download_and_unzip() {
         return
     fi
 
-    echo "  ⬇ $name 下载中..."
+    echo "  ⬇ $name ..."
 
-    # 优先 HF 镜像，不行再回退 GitHub
-    if wget -q --show-progress --timeout=30 \
-        -O "$MODEL_DIR/${name}.zip" "$hf/${name}.zip" 2>/dev/null; then
-        :
-    else
-        echo "     HF 失败，换 GitHub..."
-        wget -q --show-progress -O "$MODEL_DIR/${name}.zip" "$gh/${name}.zip"
-    fi
+    for entry in "${MIRRORS[@]}"; do
+        local label="${entry%%|*}"
+        local base="${entry##*|}"
+        local url="${base}/${name}.zip"
 
-    unzip -oq "$MODEL_DIR/${name}.zip" -d "$MODEL_DIR"
-    rm "$MODEL_DIR/${name}.zip"
-    echo "  ✅ $name 完成"
+        if wget -q --show-progress --timeout=30 \
+            -O "$MODEL_DIR/${name}.zip" "$url" 2>/dev/null; then
+            echo "    ✓ $label"
+            unzip -oq "$MODEL_DIR/${name}.zip" -d "$MODEL_DIR"
+            rm "$MODEL_DIR/${name}.zip"
+            echo "  ✅ $name 完成"
+            return
+        fi
+        echo "    ✗ $label 不可用"
+    done
+
+    echo "  ❌ $name 所有源均失败"
+    exit 1
 }
 
-# 这四个文件能从 easyocr 源码的 download_utils.py 里确认是标准文件名
-download_and_unzip "craft_mlt_25k"   "craft_mlt_25k.pth"
-download_and_unzip "english_g2"      "english_g2.pth"
-download_and_unzip "arabic"          "arabic.pth"
-download_and_unzip "zh_sim_g2"       "zh_sim_g2.pth"
+echo "[OCR] 预下载模型 → $MODEL_DIR (Gitee → HF → GitHub)"
+echo ""
+
+for m in "${MODELS[@]}"; do
+    name="${m%%:*}"
+    file="${m##*:}"
+    download_one "$name" "$file"
+done
 
 echo ""
-echo "  全部就绪 → $MODEL_DIR"
-ls -lh "$MODEL_DIR/"*.pth 2>/dev/null || echo "  (无 .pth 文件，请检查)"
+echo "  全部就绪:"
+ls -lh "$MODEL_DIR/"*.pth 2>/dev/null || echo "  (未找到 .pth 文件)"
