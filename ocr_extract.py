@@ -39,10 +39,25 @@ def _get_reader():
             print("[OCR] easyocr 未安装，OCR 功能不可用")
             _easyocr_available = False
             return None
+        except SystemExit:
+            # gunicorn worker 超时信号 → 模型下载太慢
+            print("[OCR] 模型下载超时（gunicorn timeout），OCR 已禁用")
+            _easyocr_available = False
+            return None
         except Exception as e:
             print(f"[OCR] 加载失败: {e}")
             _easyocr_available = False
             return None
+
+
+def warmup_ocr():
+    """启动时后台预热 OCR 模型（不阻塞服务）"""
+    import threading
+    def _load():
+        print("[OCR] 后台预热中...")
+        _get_reader()
+    t = threading.Thread(target=_load, name='ocr-warmup', daemon=True)
+    t.start()
 
 
 def extract_text(image_bytes: bytes) -> list[tuple[str, float]]:

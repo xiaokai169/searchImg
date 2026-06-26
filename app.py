@@ -38,6 +38,12 @@ def _ensure_init():
         engine = get_engine()
         if not engine.load():
             print("[Init] 创建新索引")
+        # 后台预热 OCR（不阻塞启动）
+        try:
+            from ocr_extract import warmup_ocr
+            warmup_ocr()
+        except Exception:
+            pass
         _init_done = True
 
 
