@@ -46,6 +46,21 @@ def get_category(item: dict) -> str:
     return cat.get('nameEn', '其他').strip() or '其他'
 
 
+def _resolve_total(data: dict) -> int | None:
+    """尝试从 API 响应中解析总数，支持常见字段名。解析不到返回 None。"""
+    for key in ('totalItems', 'total', 'count', 'totalCount', 'total_count'):
+        val = data.get(key)
+        if isinstance(val, (int, float)) and val > 0:
+            return int(val)
+    for wrapper in ('pagination', 'meta', 'pager'):
+        inner = data.get(wrapper)
+        if isinstance(inner, dict):
+            for key in ('totalItems', 'total', 'count', 'totalCount', 'total_count'):
+                val = inner.get(key)
+                if isinstance(val, (int, float)) and val > 0:
+                    return int(val)
+    return None
+
 
 def progress_reporter(stats: dict, stats_lock: threading.Lock,
                       stop_event: threading.Event, t0: float):
@@ -57,6 +72,7 @@ def progress_reporter(stats: dict, stats_lock: threading.Lock,
             df = stats['download_fail']
             s = stats['success']
             f = stats['fail']
+            sk = stats.get('skipped', 0)
             total = stats.get('total_products', 0)
             qs = stats.get('queue_size', 0)
             total_bytes = stats.get('total_bytes', 0)
@@ -64,18 +80,18 @@ def progress_reporter(stats: dict, stats_lock: threading.Lock,
             d_done = stats.get('download_done', False)
 
         if total > 0:
-            d_pct = (d + df) / total * 100 if total else 0
-            s_pct = (s + f) / total * 100 if total else 0
-            bar_d = _progress_bar(d + df, total, 20)
+            d_pct = (d + df + sk) / total * 100
+            s_pct = (s + f) / total * 100
+            bar_d = _progress_bar(d + df + sk, total, 20)
             bar_s = _progress_bar(s + f, total, 20)
             d_status = "✓完成" if d_done else f"{d_pct:.0f}%"
-            print(f"  📥 下载 {bar_d} {d_status} ({d}成功/{df}失败) | "
+            print(f"  📥 下载 {bar_d} {d_status} ({d}新/{sk}跳过/{df}失败) | "
                   f"队列 {qs} | 已下载 {_fmt_size(total_bytes)} | "
                   f"⏳ {_fmt_time(elapsed)}")
             print(f"  🔄 转换 {bar_s} {s_pct:.0f}% ({s}成功/{f}失败)")
         else:
             d_status = "✓完成" if d_done else "进行中"
-            print(f"  📥 下载: {d_status} ({d}成功/{df}失败) | "
+            print(f"  📥 下载: {d_status} ({d}新/{sk}跳过/{df}失败) | "
                   f"队列 {qs} | 已下载 {_fmt_size(total_bytes)} | "
                   f"⏳ {_fmt_time(elapsed)}")
             print(f"  🔄 转换: {s}成功/{f}失败")
@@ -113,7 +129,7 @@ def main():
         print("  请执行: export ARAB_BEE_TOKEN=\"your_jwt_token\"")
         sys.exit(1)
 
-    # 初始化数据库和引擎（不需要 Flask）
+    # 初始化数据库和引擎
     init_database()
     engine = get_engine()
     if not engine.load():
@@ -121,23 +137,31 @@ def main():
 
     print(f"当前索引: {engine.total} 个向量")
 
-    # 先拉第一页，获取总数
+    # 先拉第一页
     try:
         first_page = fetch_products(1)
-        total_products = first_page.get('totalItems', 0)
-        total_pages = -(-total_products // PAGE_SIZE)  # 向上取整
+        first_items = first_page.get('items', [])
+        total_products = _resolve_total(first_page)
     except Exception as e:
         print(f"[ERROR] 无法连接 API: {e}")
         sys.exit(1)
 
+    if total_products is None:
+        total_pages = None
+        print(f"[WARN] API 未返回总数，将以「拉取到空页为止」模式运行")
+    else:
+        total_pages = -(-total_products // PAGE_SIZE)
+        print(f"API 返回总数: {total_products}, 共 {total_pages} 页")
+
     t0 = time.time()
+    pages_done = [0]
 
     # 共享状态
     download_queue = queue.Queue(maxsize=DOWNLOAD_QUEUE_SIZE)
     stats = {
         'downloaded': 0, 'download_fail': 0,
-        'success': 0, 'fail': 0,
-        'total_products': total_products,
+        'success': 0, 'fail': 0, 'skipped': 0,
+        'total_products': total_products or 0,
         'queue_size': 0,
         'total_bytes': 0,
         'download_done': False,
@@ -145,27 +169,44 @@ def main():
     stats_lock = threading.Lock()
     stop_event = threading.Event()
 
-    # 把第一页数据预填到队列（已经拿到了，不用再请求一次）
-    def download_worker_with_first_page(dl_queue, st, st_lock, stop_evt, first_items):
-        """从第一页数据开始下载（避免重复请求）"""
-        all_pages = [(1, first_items)]  # (page_num, items)
-        for page in range(2, total_pages + 1):
+    def download_worker(dl_queue, st, st_lock, stop_evt, first_items):
+        """下载线程：拉取全部页面，直到空页为止"""
+        pages = [(1, first_items)]
+        page_num = 1
+
+        # 持续拉取直到返回空列表
+        while True:
+            page_num += 1
             if stop_evt.is_set():
                 break
             try:
-                data = fetch_products(page)
-                all_pages.append((page, data.get('items', [])))
+                data = fetch_products(page_num)
+                items = data.get('items', [])
+                if not items:
+                    break  # 空页 → 到头了
+                pages.append((page_num, items))
+                # 如果之前没拿到总数，这里尝试补上
+                if st['total_products'] == 0:
+                    new_total = _resolve_total(data)
+                    if new_total:
+                        with st_lock:
+                            st['total_products'] = new_total
             except Exception as e:
-                print(f"\n  [下载] 第{page}页请求失败: {e}")
+                print(f"\n  [下载] 第{page_num}页请求失败: {e}，重试下一页...")
 
-        for page, items in all_pages:
+        actual_pages = len(pages) if total_pages is None else max(total_pages, len(pages))
+
+        for page, items in pages:
             if stop_evt.is_set():
                 break
+            pages_done[0] = page
             page_count = len(items)
             page_bytes = 0
             page_ok = 0
             page_fail = 0
-            print(f"\n  [下载] 第 {page}/{total_pages} 页 ({page_count} 条)")
+            page_skipped = 0
+            print(f"\n  [下载] 第 {page}/{actual_pages} 页 ({page_count} 条)")
+
             for idx, item in enumerate(items, 1):
                 if stop_evt.is_set():
                     break
@@ -175,6 +216,13 @@ def main():
                     with st_lock:
                         st['download_fail'] += 1
                     page_fail += 1
+                    continue
+
+                # 跳过已入库的图片
+                if image_url_exists(img_url_raw):
+                    page_skipped += 1
+                    with st_lock:
+                        st['skipped'] += 1
                     continue
 
                 category = get_category(item)
@@ -207,7 +255,6 @@ def main():
                         st['total_bytes'] += img_size
                         st['queue_size'] = dl_queue.qsize()
 
-                    # 每10张打印单张大小
                     if page_ok % 10 == 0:
                         avg = page_bytes / page_ok
                         print(f"    [{page_ok}/{page_count}] "
@@ -221,38 +268,43 @@ def main():
                         if st['download_fail'] <= 3:
                             print(f"    ERR: {e}")
 
-            # 每页结束打汇总
-            if page_ok > 0:
-                avg = page_bytes / page_ok
-                print(f"  [下载] 第{page}页完成: {page_ok}张 {_fmt_size(page_bytes)} "
-                      f"(avg {_fmt_size(int(avg))}/张) | 失败 {page_fail}")
+            if page_ok > 0 or page_skipped > 0:
+                parts = [f"{page_ok}张 {_fmt_size(page_bytes)} (avg {_fmt_size(int(page_bytes/page_ok)) if page_ok else 0}/张)"]
+                if page_skipped > 0:
+                    parts.append(f"跳过{page_skipped}张(已入库)")
+                if page_fail > 0:
+                    parts.append(f"失败{page_fail}")
+                print(f"  [下载] 第{page}页完成: {' | '.join(parts)}")
 
-        dl_queue.put(None)  # 结束信号
+        dl_queue.put(None)
         with st_lock:
             st['download_done'] = True
-        print(f"\n  [下载] 全部完成 ✓")
+        print(f"\n  [下载] 全部完成 ✓ (共 {pages_done[0]} 页)")
 
-    # 在 process_worker 中更新 queue_size
-    def process_worker_with_progress(dl_queue, st, st_lock, stop_evt):
-        """消费者 + 更新队列大小统计"""
-        engine = get_engine()
-        extractor = get_extractor()
+    def process_worker(dl_queue, st, st_lock, stop_evt):
+        """消费者：批量提取特征 + 入库，错误可见"""
+        engine_p = get_engine()
+        extractor_p = get_extractor()
         batch_buffer = []
+        error_count = 0
 
         def flush_batch():
-            nonlocal batch_buffer
+            nonlocal batch_buffer, error_count
             if not batch_buffer:
                 return
             batch_bytes = [b['image_bytes'] for b in batch_buffer]
             try:
-                features = extractor.extract_both_batch(batch_bytes)
+                features = extractor_p.extract_both_batch(batch_bytes)
             except Exception as e:
                 print(f"\n  [转换] 批量失败: {e}，逐张降级")
                 for item in batch_buffer:
                     try:
-                        f = extractor.extract_both(item['image_bytes'])
-                        _add_single_item(engine, item, f, st, st_lock)
-                    except Exception:
+                        f = extractor_p.extract_both(item['image_bytes'])
+                        _add_single(engine_p, item, f, st, st_lock)
+                    except Exception as e2:
+                        error_count += 1
+                        if error_count <= 5:
+                            print(f"  [转换] ERR: {e2}")
                         with st_lock:
                             st['fail'] += 1
                 batch_buffer.clear()
@@ -262,10 +314,10 @@ def main():
                 try:
                     if image_url_exists(item['image_url']):
                         with st_lock:
-                            st['fail'] += 1
+                            st['skipped'] += 1
                         continue
-                    faiss_id = engine.allocate_id()
-                    engine.add_single(features['clip'][j], features['resnet'][j], faiss_id)
+                    faiss_id = engine_p.allocate_id()
+                    engine_p.add_single(features['clip'][j], features['resnet'][j], faiss_id)
                     info = get_image_info(item['image_bytes'])
                     insert_image(
                         faiss_id=faiss_id, image_url=item['image_url'],
@@ -279,13 +331,18 @@ def main():
                     )
                     with st_lock:
                         st['success'] += 1
-                except Exception:
+                except Exception as e:
+                    error_count += 1
+                    if error_count <= 5:
+                        print(f"  [转换] ERR: {e}")
                     with st_lock:
                         st['fail'] += 1
             batch_buffer.clear()
 
-        def _add_single_item(eng, item, features, st, st_lock):
+        def _add_single(eng, item, features, st, st_lock):
             if image_url_exists(item['image_url']):
+                with st_lock:
+                    st['skipped'] += 1
                 return
             faiss_id = eng.allocate_id()
             eng.add_single(features['clip'], features['resnet'], faiss_id)
@@ -322,10 +379,12 @@ def main():
             with st_lock:
                 st['queue_size'] = dl_queue.qsize()
 
-    # 启动：进度线程 + 下载线程 + 处理线程
+    # 启动
+    total_display = f"{total_products} 张" if total_products else "未知总数"
+    pages_display = f"{total_pages} 页" if total_pages else "直到空页"
     print(f"\n{'='*55}")
     print(f"  并行同步: 下载 ⇄ 转换")
-    print(f"  预计总数: {total_products} 张, {total_pages} 页")
+    print(f"  预计: {total_display}, {pages_display}")
     print(f"  队列容量: {DOWNLOAD_QUEUE_SIZE}, 批量: {BATCH_SIZE}")
     print(f"{'='*55}\n")
 
@@ -335,12 +394,12 @@ def main():
         name='progress', daemon=True,
     )
     download_thread = threading.Thread(
-        target=download_worker_with_first_page,
-        args=(download_queue, stats, stats_lock, stop_event, first_page.get('items', [])),
+        target=download_worker,
+        args=(download_queue, stats, stats_lock, stop_event, first_items),
         name='downloader', daemon=True,
     )
     process_thread = threading.Thread(
-        target=process_worker_with_progress,
+        target=process_worker,
         args=(download_queue, stats, stats_lock, stop_event),
         name='processor', daemon=True,
     )
@@ -357,7 +416,7 @@ def main():
     elapsed = time.time() - t0
 
     print(f"\n{'='*55}")
-    print(f"  下载: {stats['downloaded']} 成功 / {stats['download_fail']} 失败")
+    print(f"  下载: {stats['downloaded']} 新 / {stats['skipped']} 跳过(已入库) / {stats['download_fail']} 失败")
     print(f"  总下载量: {_fmt_size(stats['total_bytes'])}")
     print(f"  入库: {stats['success']} 成功 / {stats['fail']} 失败")
     print(f"  耗时: {_fmt_time(elapsed)}")
