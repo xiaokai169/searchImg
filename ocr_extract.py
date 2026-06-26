@@ -31,7 +31,7 @@ def _get_reader():
         try:
             import easyocr
             print("[OCR] 加载 easyocr 模型（首次约30秒）...")
-            _reader = easyocr.Reader(['en', 'ar'], gpu=False)
+            _reader = easyocr.Reader(['en', 'ar', 'ch_sim'], gpu=False)
             _easyocr_available = True
             print("[OCR] 模型就绪")
             return _reader
