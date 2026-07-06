@@ -11,7 +11,7 @@ from flask import Flask, request, jsonify, render_template_string
 from config import (
     FINAL_TOP_K, CACHE_SIZE, DATA_DIR,
     CLIP_FEATURE_DIM, RESNET_FEATURE_DIM, FUSION_ALPHA,
-    MIN_TOP_SCORE,
+    MIN_TOP_SCORE, MAX_CONCURRENT_REQUESTS, REQUEST_TIMEOUT,
 )
 from database import init_database, get_total_count, get_category_stats
 from engine import get_engine
@@ -25,6 +25,29 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 _init_done = False
 _init_lock = threading.Lock()
+
+# ====== 并发保护 ======
+_semaphore = threading.BoundedSemaphore(MAX_CONCURRENT_REQUESTS)
+
+
+def _guard(f):
+    """并发限流 + 超时保护装饰器"""
+    from functools import wraps
+
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        acquired = _semaphore.acquire(blocking=False)
+        if not acquired:
+            return jsonify({
+                "code": -1,
+                "msg": f"服务器繁忙（当前并发 {MAX_CONCURRENT_REQUESTS}），请稍后重试"
+            }), 503
+        try:
+            return f(*args, **kwargs)
+        finally:
+            _semaphore.release()
+
+    return wrapper
 
 
 def _ensure_init():
@@ -170,6 +193,7 @@ def api_init():
 
 
 @app.route('/api/add_image', methods=['POST'])
+@_guard
 def api_add_image():
     """入库单张：图片 bytes + image_url + category + 产品中英文名 + 关键字"""
     _ensure_init()
@@ -197,6 +221,7 @@ def api_add_image():
 
 
 @app.route('/api/add_batch', methods=['POST'])
+@_guard
 def api_add_batch():
     """批量入库：files[] + image_urls(JSON) + category"""
     _ensure_init()
@@ -233,6 +258,7 @@ def api_add_batch():
 
 
 @app.route('/api/search', methods=['POST'])
+@_guard
 def api_search():
     """以图搜图：上传图片 → 品类识别 → CLIP粗召回 → ResNet精排"""
     _ensure_init()
@@ -436,6 +462,20 @@ def api_rebuild_index():
         return jsonify({"code": -1, "msg": str(e)}), 409
 
 
+@app.route('/api/health', methods=['GET'])
+def api_health():
+    """健康检查（不占并发名额，供负载均衡探测）"""
+    return jsonify({
+        "code": 0,
+        "status": "ok",
+        "concurrency": {
+            "max": MAX_CONCURRENT_REQUESTS,
+            "in_use": MAX_CONCURRENT_REQUESTS - _semaphore._value
+        }
+    })
+
+
+@_guard
 @app.route('/api/save_index', methods=['POST'])
 def api_save_index():
     """手动保存索引到磁盘"""

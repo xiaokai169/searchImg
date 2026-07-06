@@ -107,3 +107,7 @@ OBS_IMAGE_PROCESS = '?x-image-process=image/resize,m_lfit,w_800/quality,q_85/aut
 FLASK_HOST = '0.0.0.0'
 FLASK_PORT = 5000
 FLASK_DEBUG = False
+
+# ========== 并发保护 ==========
+MAX_CONCURRENT_REQUESTS = 10      # 最大并发请求数，超出返回 503
+REQUEST_TIMEOUT = 30              # 单个请求最大处理时间（秒）
