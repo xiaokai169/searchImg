@@ -12,6 +12,7 @@ from config import (
     FINAL_TOP_K, CACHE_SIZE, CACHE_TTL, DATA_DIR,
     CLIP_FEATURE_DIM, RESNET_FEATURE_DIM, FUSION_ALPHA,
     MIN_TOP_SCORE, MAX_CONCURRENT_REQUESTS, REQUEST_TIMEOUT,
+    AUTO_CATEGORY_FILTER,
 )
 from database import init_database, get_total_count, get_category_stats
 from engine import get_engine
@@ -358,7 +359,7 @@ def api_search():
                     "predicted_category": category, "filter_source": "manual"
                 }
                 return jsonify({"code": 0, "data": response_data})
-        elif predicted_cat:
+        elif predicted_cat and AUTO_CATEGORY_FILTER:
             from database import get_all_images
             imgs = get_all_images(category=predicted_cat)
             cat_filter = [img['faiss_id'] for img in imgs]

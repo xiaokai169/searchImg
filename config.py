@@ -75,6 +75,12 @@ MIN_TOP_SCORE = 0.70            # 第一名 <70% → "库中无匹配商品"
 # 品类自动分类
 CATEGORY_CLASSIFY_CONFIDENCE = 0.02
 
+# 自动识别出的品类是否用于过滤候选集（默认关闭）
+# 注意：ALLOWED_CATEGORIES 是 7 个中文品类，而库里实际是 90+ 个英文行业大类，
+# 两者体系不一致；CLIP 对这类粗粒度品类误判率高，一旦用作过滤器会把本可命中的
+# 结果整片排除。关闭后仍会返回 predicted_category，仅不参与候选集裁剪。
+AUTO_CATEGORY_FILTER = False
+
 # 产品名称锚定过滤（核心防线）
 # 以第一名产品名为锚，其他结果须共享关键词
 NAME_ANCHOR_MIN_MATCH = 1       # 基础：至少匹配1个关键词
