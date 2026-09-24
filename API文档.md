@@ -94,6 +94,7 @@ Content-Type: multipart/form-data
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
 | file | File | ✅ | — | 待搜索的图片（JPG/PNG/WebP/BMP/GIF，≤16MB） |
+| — | — | — | — | **建议**：调用方先把图压到长边 ≤1024、JPEG q≈0.9 再上传（内置页面即如此）。手机原图 3-8MB 压后约 200KB，上传与后端解码都快一个数量级，且匹配精度不变 |
 | category | String | 否 | — | 限定品类，不传则自动识别。可选值见下方 |
 | top_k | Int | 否 | 20 | 返回结果数量 |
 | auto_category | String | 否 | "1" | 是否自动识别品类，"0" 关闭 |
@@ -125,6 +126,8 @@ Content-Type: multipart/form-data
     "total_db": 500,
     "query_time_ms": 320.5,
     "breakdown": {
+      "decode_ms": 48.2,
+      "sharpness_ms": 9.1,
       "feature_extraction_ms": 250.1,
       "search_rerank_ms": 70.4
     },
@@ -141,10 +144,25 @@ Content-Type: multipart/form-data
     "min_threshold": 0.7,
     "ocr_keywords": [],
     "ocr_raw_texts": [],
-    "text_boost_applied": false
+    "text_boost_applied": false,
+    "sharpness": 142.6,
+    "sharpness_threshold": 12.0,
+    "sharpness_enforced": false,
+    "zoom_used": 1.4,
+    "zooms_available": [1.0, 1.4, 2.0, 2.8],
+    "best_zoom_score": 0.6758
   }
 }
 ```
+
+> `sharpness`：图片清晰度得分（拉普拉斯方差）。**该分数在长边 1024 的工作图上计算**，
+> 不要与全分辨率的数值比较。`sharpness_enforced=false` 表示当前为影子模式，
+> 分数仅供参考、不参与拒绝。
+>
+> `zoom_used` / `zooms_available` / `best_zoom_score`：多尺度检索诊断信息。
+> 服务端对查询图做多档中心裁切后分别检索（zoom 越大裁得越紧，用于应对商品在
+> 画面中占比不足、背景干扰较大的手机实拍照片），最终采用 top1 分数最高的那一档。
+> `zoom_used` 即该档，`best_zoom_score` 为其 top1 分数。
 
 ### 结果字段说明
 
@@ -192,10 +210,13 @@ Content-Type: multipart/form-data
 ```json
 {
   "code": -1,
-  "msg": "图片清晰度不足，无法搜索",
-  "sharpness": 15.2
+  "msg": "图片清晰度不足（得分 8.3，要求 ≥12）。请上传更清晰的图片。",
+  "sharpness": 8.3,
+  "sharpness_threshold": 12.0
 }
 ```
+
+> 仅当 `sharpness_enforced=true` 时才可能出现此错误。得分在长边 1024 的工作图上计算。
 
 ### 并发已满
 
