@@ -4,8 +4,12 @@
 阶段2: ResNet50 细粒度精排 + 分数融合
 """
 import os
+import re
 import json
+import math
 import threading
+from collections import Counter
+
 import numpy as np
 import faiss
 from config import (
@@ -16,7 +20,61 @@ from config import (
     MIN_RESNET_SCORE, MIN_RELATIVE_SCORE,
     MIN_FUSED_SCORE, MIN_TOP_SCORE, CATEGORY_CLASSIFY_CONFIDENCE,
     NAME_ANCHOR_MIN_MATCH, NAME_ANCHOR_MIN_RESULTS,
+    CONSENSUS_RERANK_TOP_N, CONSENSUS_RERANK_WEIGHT,
+    CONSENSUS_MIN_DF, CONSENSUS_MIN_DF_RATIO,
 )
+
+# ==================== 产品名 / 关键词分词 ====================
+# 这些常量为 filter_by_product_name（硬过滤）与 rerank_by_consensus（共识重排）共用。
+# 两者对"什么词能代表品类"的判据一致，只是使用方式不同（过滤 vs 重排）。
+
+# 品牌名：跨品类通用，不能用作区分词
+_BRANDS = {
+    'xiaomi', 'redmi', 'samsung', 'apple', 'macbook', 'galaxy',
+    'black', 'shark', 'huawei', 'honor', 'oneplus', 'oppo', 'vivo',
+    'realme', 'nokia', 'motorola', 'google', 'pixel', 'lenovo',
+    'dell', 'asus', 'acer', 'sony', 'lg', 'philips', 'panasonic',
+    'bosch', 'siemens',
+}
+
+# 通用停用词
+_STOPS = {
+    'inch', 'with', 'and', 'for', 'the', 'new', 'hot', 'best',
+    'high', 'quality', 'premium', 'sale', 'free', 'size', 'color',
+    'large', 'small', 'medium', 'style', 'model', 'brand', 'made',
+    'china', 'product', 'goods', 'item', 'type', 'set', 'pack',
+    'piece', 'unit', 'each', 'per', 'cm', 'mm', 'meter', 'gram',
+    'kg', 'dual', 'sim', 'ram', 'rom', 'version', 'global', 'middle',
+    'east', 'black', 'white', 'blue', 'grey', 'gold', 'silver',
+    'portable', 'smart', 'magnetic', 'liquid', 'silicone', 'matte',
+    'flash', 'magic', 'tempered', 'glass', 'screen', 'protector',
+}
+
+# 关键词/产品名的分词边界
+_TOKEN_SPLIT_RE = re.compile(r'[\s\-/,.;:()\[\]{}|]+')
+
+
+def _consensus_terms(r: dict) -> set[str]:
+    """
+    提取一条结果的「品类词」，供共识投票使用。
+
+    信号覆盖 keywords_en / keywords_cn / product_name 三个字段。
+    keywords_* 是入库时构建的商品词表（库中 98.8% 覆盖），比 product_name 裸分词
+    干净且完整 —— 此前它在检索链路里只写不读。
+    """
+    terms: set[str] = set()
+    for field in ('keywords_en', 'keywords_cn', 'product_name'):
+        s = r.get(field) or ''
+        if not s:
+            continue
+        for t in _TOKEN_SPLIT_RE.split(str(s).lower()):
+            t = t.strip()
+            if len(t) < 2 or t in _STOPS or t in _BRANDS:
+                continue
+            if t.isdigit() or t.replace('.', '').isdigit():
+                continue
+            terms.add(t)
+    return terms
 
 
 def _atomic_save_npy(path: str, array: np.ndarray) -> None:
@@ -267,37 +325,13 @@ class TwoStageEngine:
         if not results or len(results) < min_results:
             return results  # 太少，不冒险
 
-        import re
-
-        # 品牌名（跨品类通用，不能用作区分词）
-        BRANDS = {
-            'xiaomi', 'redmi', 'samsung', 'apple', 'macbook', 'galaxy',
-            'black', 'shark', 'huawei', 'honor', 'oneplus', 'oppo', 'vivo',
-            'realme', 'nokia', 'motorola', 'google', 'pixel', 'lenovo',
-            'dell', 'asus', 'acer', 'sony', 'lg', 'philips', 'panasonic',
-            'bosch', 'siemens',
-        }
-
-        # 通用停用词
-        STOPS = {
-            'inch', 'with', 'and', 'for', 'the', 'new', 'hot', 'best',
-            'high', 'quality', 'premium', 'sale', 'free', 'size', 'color',
-            'large', 'small', 'medium', 'style', 'model', 'brand', 'made',
-            'china', 'product', 'goods', 'item', 'type', 'set', 'pack',
-            'piece', 'unit', 'each', 'per', 'cm', 'mm', 'meter', 'gram',
-            'kg', 'dual', 'sim', 'ram', 'rom', 'version', 'global', 'middle',
-            'east', 'black', 'white', 'blue', 'grey', 'gold', 'silver',
-            'portable', 'smart', 'magnetic', 'liquid', 'silicone', 'matte',
-            'flash', 'magic', 'tempered', 'glass', 'screen', 'protector',
-        }
-
         def extract_keywords(name: str) -> set[str]:
             if not name:
                 return set()
-            tokens = re.split(r'[\s\-/,.;:()\[\]{}|]+', name.lower())
+            tokens = _TOKEN_SPLIT_RE.split(name.lower())
             result = set()
             for t in tokens:
-                if not t or t in STOPS or t in BRANDS:
+                if not t or t in _STOPS or t in _BRANDS:
                     continue
                 if t.isdigit() or t.replace('.', '').isdigit():
                     continue
@@ -326,6 +360,63 @@ class TwoStageEngine:
 
         # 返回过滤结果（第一名永远保留，至少1条）
         return filtered
+
+    # ==================== 共识重排 ====================
+
+    @staticmethod
+    def rerank_by_consensus(results: list[dict],
+                            top_n: int = CONSENSUS_RERANK_TOP_N,
+                            weight: float = CONSENSUS_RERANK_WEIGHT,
+                            min_df: int = CONSENSUS_MIN_DF,
+                            min_df_ratio: float = CONSENSUS_MIN_DF_RATIO,
+                            ) -> tuple[list[dict], set[str], int]:
+        """
+        用 top-K 结果集的词频共识重排候选（只改顺序，不删结果）。
+
+        与 filter_by_product_name 的三点区别，正是后者救不了手机实拍的原因：
+          基准 —— 取 top-K 全体投票，而非 top1 单条当锚 → 对错误的 top1 免疫
+                  （实测 459b 的 top1 是 'Office chair'（错），拿它当锚会砍光正确答案）
+          信号 —— 叠加 keywords_en / keywords_cn，而非只用 product_name 裸分词
+          动作 —— 重排而非硬过滤 → 结果集不会因为重排而变空
+
+        打分：取该结果命中的共识词中「文档频率最高的那个」，按全局最高 df 归一化后
+        乘以 weight 加分。用「最强 df」而非「df 求和」，是为了让加分体现【归属于哪个
+        词簇】而不是【匹配上几个词】—— 否则次要词簇能靠词数堆出更高加分：
+        实测 31a5 中埋地灯簇合计匹配 4 个词、移动CT簇只匹配 2 个，求和会让埋地灯反超。
+
+        返回 (重排后的列表, 共识词集合, 被加分的条数)
+        """
+        if len(results) < 2 or top_n < 2:
+            return results, set(), 0
+
+        window = results[:top_n]                 # 已按 fused_score 降序
+        term_sets = [_consensus_terms(r) for r in window]
+
+        # 文档频率：每个词出现在多少条候选里
+        df: Counter = Counter()
+        for ts in term_sets:
+            df.update(ts)
+
+        threshold = max(min_df, math.ceil(len(window) * min_df_ratio))
+        consensus = {w for w, c in df.items() if c >= threshold}
+        if not consensus:
+            return results, set(), 0
+
+        max_df = max(df[w] for w in consensus)
+        boosted = 0
+        for r, ts in zip(window, term_sets):
+            best = max((df[w] for w in (ts & consensus)), default=0)
+            coverage = best / max_df
+            r['consensus_score'] = round(coverage, 4)
+            if coverage <= 0:
+                continue
+            r['fused_score'] = round(min(1.0, r['fused_score'] + weight * coverage), 4)
+            boosted += 1
+
+        # window 之外的结果不参与投票也不加分，天然排在 window 之后
+        # （window 本就是分数最高的一批，加分只会拉大差距，不会破坏该顺序）
+        window.sort(key=lambda x: x['fused_score'], reverse=True)
+        return window + results[top_n:], consensus, boosted
 
     # ==================== 查询 ====================
 

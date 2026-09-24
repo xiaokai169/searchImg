@@ -82,7 +82,7 @@ GET /api/stats
 
 ## 4. 以图搜图（核心）
 
-> 上传图片 → 品类自动识别 → CLIP 粗召回 → ResNet 精排 → 共识过滤
+> 上传图片 → 品类自动识别 → 多尺度裁切 → CLIP 粗召回 → ResNet 精排 → **共识重排** → 产品名共识过滤
 
 ```
 POST /api/search
@@ -120,7 +120,8 @@ Content-Type: multipart/form-data
         "product_id": "SKU001",
         "clip_score": 0.82,
         "resnet_score": 0.76,
-        "fused_score": 0.79
+        "fused_score": 0.79,
+        "consensus_score": 1.0
       }
     ],
     "total_db": 500,
@@ -140,6 +141,8 @@ Content-Type: multipart/form-data
     "consensus_applied": true,
     "consensus_word": "handbag",
     "results_before_consensus": 15,
+    "rerank_applied": true,
+    "consensus_terms": ["handbag", "leather", "tote"],
     "top_score": 0.79,
     "min_threshold": 0.7,
     "ocr_keywords": [],
@@ -169,14 +172,16 @@ Content-Type: multipart/form-data
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | id | Int | 图片数据库 ID |
+| faiss_id | Int | 向量索引 ID |
 | image_url | String | 图片 OBS 地址 |
-| category | String | 产品品类 |
+| category | String | 产品品类（**注意：这是行业大类，粒度不统一，不适合当商品类别用**） |
 | product_name | String | 产品英文名 |
 | product_name_cn | String | 产品中文名 |
 | product_id | String | 产品 SKU/编号 |
 | clip_score | Float | CLIP 语义相似度（0~1） |
 | resnet_score | Float | ResNet 纹理细节相似度（0~1） |
 | fused_score | Float | 融合得分（0~1），**按此字段排序，值越高越相似** |
+| consensus_score | Float | 品类共识度（0~1），该结果归属于票数最高品类簇的程度。参与重排的加分即由此算出，未进入投票窗口的结果为 0 |
 
 ### 元数据字段说明
 
@@ -185,11 +190,24 @@ Content-Type: multipart/form-data
 | predicted_category | 自动识别的品类 |
 | predict_confidence | 识别置信度（0~1） |
 | filter_source | `auto`=自动识别 / `manual`=手动指定 / `auto_empty`=品类无数据全库搜索 |
-| consensus_applied | 是否触发了产品名共识过滤 |
+| consensus_applied | 是否触发了产品名共识**过滤**（会减少结果数） |
 | consensus_word | 共识关键词 |
 | results_before_consensus | 过滤前的结果数 |
+| rerank_applied | 是否触发了共识**重排**（只改顺序，**不会减少结果数**） |
+| consensus_terms | 参与投票的品类共识词（最多 8 个，仅诊断用） |
 | top_score | 第一名融合分 |
 | cached | 是否命中缓存 |
+
+> **共识重排 vs 共识过滤**：两者都用于抑制"结果里混入不同品类"的问题，但机制不同。
+>
+> **重排**（`rerank_applied`）用 top-20 结果集的词频投票找出品类共识词，给同簇结果加分后
+> 重新排序，**不丢弃任何结果**。这是手机实拍场景的主力——手机实拍的 top1 分数只有
+> 0.65~0.68，错误品类会挤进前 3，而正确答案稳定出现在 top-15 内，瓶颈在头部排序而非召回。
+> 它用"群体投票"取代"top1 单条当锚"，因此对错误的 top1 免疫。
+>
+> **过滤**（`consensus_applied`）以 top1 产品名为锚做硬性裁剪，**会减少结果数**。它仅在
+> top1 原始分 ≥0.80（即白底图搜白底图）时才启用；手机实拍因原始分过低而被门控跳过，
+> 正是为了避免用可能错误的 top1 当锚砍掉正确答案。注意该门控用的是**重排之前的原始分**。
 
 ### 无匹配结果
 

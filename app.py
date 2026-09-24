@@ -15,6 +15,7 @@ from config import (
     AUTO_CATEGORY_FILTER, SHARPNESS_ENFORCE, MIN_SHARPNESS,
     CLIENT_MAX_EDGE, CLIENT_JPEG_QUALITY, MAX_IMAGE_SIZE,
     SEARCH_ZOOMS, ZOOM_EARLY_STOP_SCORE, NAME_ANCHOR_MIN_TOP_SCORE,
+    CONSENSUS_RERANK_ENABLE, CONSENSUS_RERANK_WEIGHT,
 )
 from database import init_database, get_total_count, get_category_stats
 from engine import get_engine
@@ -186,8 +187,18 @@ def _resolve(engine_results: list[dict]) -> list[dict]:
             "clip_score": float(item['clip_score']),
             "resnet_score": float(item['resnet_score']),
             "fused_score": float(item['fused_score']),
+            # 共识重排的输入信号，重排后由 _strip_rerank_fields 剥离，不进 API 响应
+            "keywords_en": str(img.get('keywords_en', '') or ''),
+            "keywords_cn": str(img.get('keywords_cn', '') or ''),
         })
     return results
+
+
+def _strip_rerank_fields(results: list[dict]) -> None:
+    """剥离仅用于共识重排的字段，保持 API 响应形状稳定"""
+    for r in results:
+        r.pop('keywords_en', None)
+        r.pop('keywords_cn', None)
 
 
 # ==================== API ====================
@@ -445,7 +456,28 @@ def api_search():
             if text_boost_applied:
                 results.sort(key=lambda x: x['fused_score'], reverse=True)
 
-        # 记录最高分（用于前端判断"是真没有还是被过滤了"）
+        # 门控基准：重排【之前】的原始视觉分。
+        # NAME_ANCHOR_MIN_TOP_SCORE=0.80 是按原始 ResNet 余弦分标定的（白底图自匹配
+        # ≈1.0，手机实拍只有 0.65~0.68）。重排后的分 = 原始分 + 品类共识加分，两者
+        # 量纲不同，不能拿同一个阈值去卡 —— 实测重排把手机实拍 top1 抬到 0.81~0.82，
+        # 误开门控后硬过滤把 99 条砍到 3 条（无人机召回 24→3），反而吃掉重排收益。
+        raw_top_score = results[0]['fused_score'] if results else 0.0
+
+        # ====== 共识重排（只改顺序，不删结果） ======
+        # 手机实拍 top1 分数只有 0.65~0.68，错误品类（Office chair / Delivery cart）
+        # 会挤进前 3，而正确答案稳定出现在 top-15 内 —— 瓶颈在头部排序而非召回。
+        # 用 top-K 全体词频投票把它们提上来，对单个错误的 top1 免疫。
+        # 详见 config.CONSENSUS_RERANK_ENABLE 的实测依据。
+        rerank_applied = False
+        consensus_terms: list[str] = []
+        if results and CONSENSUS_RERANK_ENABLE:
+            results, terms, boosted = get_engine().rerank_by_consensus(
+                results, weight=CONSENSUS_RERANK_WEIGHT)
+            if boosted:
+                rerank_applied = True
+                consensus_terms = sorted(terms)[:8]
+
+        # 记录最高分（用于前端展示"是真的没匹配还是被过滤了"）
         top_result_score = results[0]['fused_score'] if results else 0.0
 
         # ====== 产品名称共识过滤 ======
@@ -454,7 +486,7 @@ def api_search():
         results_before = len(results)
         # 仅在"锚"可靠时启用共识过滤：低分场景 top1 本身可能就是错的，用它当锚
         # 反而会砍掉正确答案（详见 config.NAME_ANCHOR_MIN_TOP_SCORE 的实测说明）
-        if results and top_result_score >= NAME_ANCHOR_MIN_TOP_SCORE:
+        if results and raw_top_score >= NAME_ANCHOR_MIN_TOP_SCORE:
             filtered = get_engine().filter_by_product_name(results)
             if len(filtered) < len(results):
                 # 找出共识词用于前端显示
@@ -465,6 +497,9 @@ def api_search():
                 consensus_applied = True
                 consensus_word = _find_consensus_word(results, filtered)
                 results = filtered
+
+        # 重排与过滤都已用完 keywords_*，剥离后再进响应/缓存，保持 API 形状稳定
+        _strip_rerank_fields(results)
 
         total_ms = round((time.time() - t0) * 1000, 1)
 
@@ -493,6 +528,9 @@ def api_search():
             "consensus_applied": consensus_applied,
             "consensus_word": consensus_word,
             "results_before_consensus": results_before,
+            # 共识重排诊断：是否生效 + 参与投票的品类共识词
+            "rerank_applied": rerank_applied,
+            "consensus_terms": consensus_terms,
             "top_score": round(top_result_score, 4),
             "min_threshold": float(MIN_TOP_SCORE),
             "ocr_keywords": ocr_keywords,
@@ -795,7 +833,11 @@ async function s(){
       return;
     }
 
-    // 共识过滤提示
+    // 共识重排提示（只改顺序，结果数不变）
+    if(d.rerank_applied && d.consensus_terms && d.consensus_terms.length){
+      catInfo.textContent+=' | 🧭 已按产品共识重排: '+d.consensus_terms.slice(0,3).join('/');
+    }
+    // 共识过滤提示（会减少结果数）
     if(d.consensus_applied && d.consensus_word){
       catInfo.textContent+=' | 🎯 产品共识: "'+d.consensus_word+'" ('+d.results_before_consensus+'→'+d.results.length+'条)';
     }
