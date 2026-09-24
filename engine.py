@@ -19,12 +19,21 @@ from config import (
 )
 
 
+def _atomic_save_npy(path: str, array: np.ndarray) -> None:
+    """先写临时文件再原子替换，避免写到一半进程退出留下损坏的 .npy"""
+    tmp = path + '.tmp'
+    with open(tmp, 'wb') as f:
+        np.save(f, array)
+    os.replace(tmp, path)
+
+
 class TwoStageEngine:
     """CLIP 粗召回 + ResNet50 精排引擎（线程安全）"""
 
     def __init__(self):
         self._lock = threading.Lock()
         self._next_id = 0
+        self._dirty = False          # 是否有未落盘的写入
 
         # FAISS 索引：存储 CLIP 向量（用于粗召回）
         inner = faiss.IndexFlatIP(CLIP_FEATURE_DIM)  # 内积 = 余弦相似度
@@ -55,6 +64,7 @@ class TwoStageEngine:
             for i, fid in enumerate(ids):
                 self.resnet_features[int(fid)] = resnet_vectors[i]
             self._next_id = max(self._next_id, int(ids.max()) + 1)
+            self._dirty = True
 
     def add_single(self, clip_vec: np.ndarray, resnet_vec: np.ndarray,
                    faiss_id: int) -> None:
@@ -181,17 +191,23 @@ class TwoStageEngine:
         """
         from database import get_all_images
         images = get_all_images()
+        if not images or self.clip_index.ntotal == 0:
+            return {}
+
+        # IndexIDMap 不实现 reconstruct，需穿过内层 IndexFlat 按内部位置取。
+        # 一次性取全量，避免逐条 C++ 调用
+        inner = self.clip_index.index
+        all_vecs = inner.reconstruct_n(0, inner.ntotal)           # (N, 512)
+        id_map = faiss.vector_to_array(self.clip_index.id_map)    # 内部位置 → 外部 faiss_id
+        pos_of = {int(fid): i for i, fid in enumerate(id_map)}
 
         # 按品类聚合 CLIP 向量
         cat_vecs: dict[str, list[np.ndarray]] = {}
         for img in images:
-            fid = img['faiss_id']
-            cat = str(img['category'])
-            try:
-                vec = self.clip_index.reconstruct(int(fid))
-                cat_vecs.setdefault(cat, []).append(np.asarray(vec, dtype=np.float32))
-            except Exception:
+            pos = pos_of.get(int(img['faiss_id']))
+            if pos is None:            # 库里存在但索引里没有（漏提取），跳过
                 continue
+            cat_vecs.setdefault(str(img['category']), []).append(all_vecs[pos])
 
         prototypes = {}
         for cat, vecs in cat_vecs.items():
@@ -321,29 +337,38 @@ class TwoStageEngine:
     def resnet_count(self) -> int:
         return len(self.resnet_features)
 
+    @property
+    def dirty(self) -> bool:
+        """是否存在尚未落盘的写入"""
+        return self._dirty
+
     # ==================== 持久化 ====================
 
     def save(self) -> None:
-        """保存 FAISS 索引 + ResNet 特征到磁盘"""
+        """保存 FAISS 索引 + ResNet 特征到磁盘（原子替换，避免半写损坏）"""
         with self._lock:
             # 保存 FAISS CLIP 索引
-            faiss.write_index(self.clip_index, FAISS_INDEX_PATH)
+            faiss.write_index(self.clip_index, FAISS_INDEX_PATH + '.tmp')
+            os.replace(FAISS_INDEX_PATH + '.tmp', FAISS_INDEX_PATH)
 
             # 保存 ResNet 特征（faiss_id 排序后存入 numpy）
             ids = sorted(self.resnet_features.keys())
+            ids_path = RESNET_FEATURES_PATH.replace('.npy', '_ids.npy')
             if ids:
                 matrix = np.stack([self.resnet_features[i] for i in ids], axis=0)
-                np.save(RESNET_FEATURES_PATH, matrix)
-                # 同时保存 id 顺序
-                np.save(RESNET_FEATURES_PATH.replace('.npy', '_ids.npy'),
-                        np.array(ids, dtype=np.int64))
             else:
                 # 空特征
-                np.save(RESNET_FEATURES_PATH, np.empty((0, RESNET_FEATURE_DIM), dtype=np.float32))
+                matrix = np.empty((0, RESNET_FEATURE_DIM), dtype=np.float32)
+            _atomic_save_npy(RESNET_FEATURES_PATH, matrix)
+            _atomic_save_npy(ids_path, np.array(ids, dtype=np.int64))
 
             # 保存 next_id
-            with open(ID_MAP_PATH, 'w') as f:
+            tmp = ID_MAP_PATH + '.tmp'
+            with open(tmp, 'w') as f:
                 json.dump({"next_id": self._next_id}, f)
+            os.replace(tmp, ID_MAP_PATH)
+
+            self._dirty = False
 
         print(f"[Engine] 已保存: {self.clip_index.ntotal} CLIP向量, "
               f"{len(self.resnet_features)} ResNet特征")

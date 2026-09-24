@@ -9,7 +9,7 @@ import threading
 from flask import Flask, request, jsonify, render_template_string
 
 from config import (
-    FINAL_TOP_K, CACHE_SIZE, DATA_DIR,
+    FINAL_TOP_K, CACHE_SIZE, CACHE_TTL, DATA_DIR,
     CLIP_FEATURE_DIM, RESNET_FEATURE_DIM, FUSION_ALPHA,
     MIN_TOP_SCORE, MAX_CONCURRENT_REQUESTS, REQUEST_TIMEOUT,
 )
@@ -71,16 +71,23 @@ def _ensure_init():
 
 
 class LRUCache:
-    def __init__(self, maxsize: int = CACHE_SIZE):
+    def __init__(self, maxsize: int = CACHE_SIZE, ttl: int = CACHE_TTL):
         self._cache, self._order, self._maxsize = {}, [], maxsize
+        self._ttl = ttl
         self._lock = threading.Lock()
 
     def get(self, key):
         with self._lock:
             if key in self._cache:
+                value, ts = self._cache[key]
+                if self._ttl and time.time() - ts > self._ttl:
+                    # 已过期：清掉，避免陈旧结果（如空结果）被永久命中
+                    del self._cache[key]
+                    self._order.remove(key)
+                    return None
                 self._order.remove(key)
                 self._order.append(key)
-                return self._cache[key]
+                return value
         return None
 
     def put(self, key, value):
@@ -89,7 +96,7 @@ class LRUCache:
                 self._order.remove(key)
             elif len(self._cache) >= self._maxsize:
                 del self._cache[self._order.pop(0)]
-            self._cache[key] = value
+            self._cache[key] = (value, time.time())
             self._order.append(key)
 
     def clear(self):
@@ -728,7 +735,7 @@ if __name__ == '__main__':
     def _shutdown():
         try:
             e = get_engine()
-            if e.total > 0:
+            if e.dirty:          # 仅在有未落盘的写入时才写盘
                 e.save()
                 print("[Shutdown] 索引已保存")
         except:
